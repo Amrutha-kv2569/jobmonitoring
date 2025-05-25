@@ -7,7 +7,31 @@ from sklearn.cluster import KMeans
 import pickle
 import os
 
-# Scraping function
+# ------------------------ Streamlit Page Config ------------------------
+st.set_page_config(page_title="Smart Job Recommender", page_icon="🧠", layout="wide")
+
+# ------------------------ Header ------------------------
+st.markdown("<h1 style='text-align: center; color: #4CAF50;'>🧠 Smart Job Recommender for Data Careers</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center;'>Scrape, Cluster, and Match Jobs Based on Your Skills</p>", unsafe_allow_html=True)
+st.markdown("---")
+
+# ------------------------ Sidebar ------------------------
+with st.sidebar:
+    st.header("🔧 Job Search Controls")
+    keyword = st.text_input("🔍 Job Keyword", "data science")
+    pages = st.slider("📄 Pages to Scrape", 1, 5, 1)
+    cluster_count = st.slider("🧩 Number of Clusters", 2, 10, 5)
+
+    if st.button("🚀 Start Search & Clustering"):
+        st.session_state['run_clustering'] = True
+
+    st.markdown("---")
+    user_skills = st.text_input("🎯 Your Skills", "python, machine learning, SQL")
+    if st.button("🔍 Match My Skills"):
+        st.session_state['run_matching'] = True
+
+
+# ------------------------ Scraper ------------------------
 @st.cache_data(show_spinner=False)
 def scrape_karkidi_jobs(keyword="data science", pages=1):
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -45,7 +69,6 @@ def scrape_karkidi_jobs(keyword="data science", pages=1):
     return pd.DataFrame(jobs_list)
 
 
-# Clustering function
 def cluster_jobs(df, n_clusters=5):
     vectorizer = TfidfVectorizer(stop_words='english')
     X = vectorizer.fit_transform(df['Skills'])
@@ -53,49 +76,71 @@ def cluster_jobs(df, n_clusters=5):
     model = KMeans(n_clusters=n_clusters, random_state=42)
     df['Cluster'] = model.fit_predict(X)
 
-    # Save model and vectorizer for reuse
     with open("model.pkl", "wb") as f:
         pickle.dump((model, vectorizer), f)
 
     return df
 
 
-# UI starts here
-st.title("🔍 Karkidi Job Scraper & Skill-based Job Clustering")
+# ------------------------ Job Cards ------------------------
+def display_job_cards(df, title="Jobs", cluster=None):
+    st.markdown(f"<h3 style='color: #6A5ACD;'>{title}</h3>", unsafe_allow_html=True)
+    cols = st.columns(2)
+    for i, (_, row) in enumerate(df.iterrows()):
+        with cols[i % 2]:
+            st.markdown(f"""
+                <div style='background-color: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 5px solid {"#6A5ACD" if cluster is None else f"#E91E63"};'>
+                    <h4>{row['Title']}</h4>
+                    <p><b>Company:</b> {row['Company']}<br>
+                    <b>Location:</b> {row['Location']}<br>
+                    <b>Experience:</b> {row['Experience']}<br>
+                    <b>Skills:</b> {row['Skills']}</p>
+                </div>
+            """, unsafe_allow_html=True)
 
-keyword = st.text_input("Enter job keyword (e.g. data science, ML, AI):", "data science")
-pages = st.slider("Number of pages to scrape", 1, 5, 1)
-cluster_count = st.slider("Number of skill clusters", 2, 10, 5)
+# ------------------------ Execution Triggers ------------------------
 
-if st.button("Scrape & Cluster Jobs"):
-    df = scrape_karkidi_jobs(keyword=keyword, pages=pages)
+if 'run_clustering' in st.session_state and st.session_state['run_clustering']:
+    with st.spinner("🔄 Scraping job listings..."):
+        df = scrape_karkidi_jobs(keyword=keyword, pages=pages)
+
     if not df.empty:
-        df_clustered = cluster_jobs(df, n_clusters=cluster_count)
-        st.success(f"Scraped {len(df)} jobs and clustered into {cluster_count} groups.")
+        with st.spinner("⚙️ Clustering jobs by skills..."):
+            df_clustered = cluster_jobs(df, n_clusters=cluster_count)
 
-        st.subheader("Sample of clustered jobs")
-        st.dataframe(df_clustered[['Title', 'Company', 'Skills', 'Cluster']].head(20))
+        st.success(f"✅ Scraped {len(df)} jobs and grouped them into {cluster_count} clusters.")
+        for cluster_num in range(cluster_count):
+            cluster_df = df_clustered[df_clustered['Cluster'] == cluster_num]
+            if not cluster_df.empty:
+                display_job_cards(cluster_df.head(4), title=f"🔗 Cluster {cluster_num + 1}", cluster=cluster_num)
+
+        st.session_state['df_jobs'] = df_clustered
     else:
-        st.warning("No jobs found. Try another keyword or wait and retry.")
+        st.warning("⚠️ No jobs found. Try changing the keyword or page range.")
+    st.session_state['run_clustering'] = False
 
-# Match user skills to job cluster
-st.markdown("---")
-st.subheader("🎯 Find Jobs Matching Your Skills")
-user_skills = st.text_input("Enter your skills (comma-separated)", "python, machine learning, SQL")
+# ------------------------ Skill Matcher ------------------------
+if 'run_matching' in st.session_state and st.session_state['run_matching'] and user_skills:
+    if os.path.exists("model.pkl"):
+        with open("model.pkl", "rb") as f:
+            model, vectorizer = pickle.load(f)
 
-if os.path.exists("model.pkl") and user_skills:
-    with open("model.pkl", "rb") as f:
-        model, vectorizer = pickle.load(f)
+        user_vector = vectorizer.transform([user_skills])
+        cluster_id = model.predict(user_vector)[0]
 
-    user_vector = vectorizer.transform([user_skills])
-    cluster_id = model.predict(user_vector)[0]
+        st.info(f"🧲 Based on your skills, you're most aligned with **Cluster {cluster_id + 1}**.")
 
-    df_jobs = scrape_karkidi_jobs(keyword=keyword, pages=1)
-    if not df_jobs.empty:
-        df_jobs['Cluster'] = model.predict(vectorizer.transform(df_jobs['Skills']))
+        if 'df_jobs' not in st.session_state:
+            df_jobs = scrape_karkidi_jobs(keyword=keyword, pages=1)
+            df_jobs['Cluster'] = model.predict(vectorizer.transform(df_jobs['Skills']))
+        else:
+            df_jobs = st.session_state['df_jobs']
+
         matched_jobs = df_jobs[df_jobs['Cluster'] == cluster_id]
-
-        st.write(f"📌 Found {len(matched_jobs)} new jobs matching your skill cluster.")
-        st.dataframe(matched_jobs[['Title', 'Company', 'Location', 'Skills']])
+        if not matched_jobs.empty:
+            display_job_cards(matched_jobs.head(6), title="🎯 Jobs Matching Your Skills")
+        else:
+            st.warning("❌ No matching jobs found in this cluster.")
     else:
-        st.warning("Could not load new job listings.")
+        st.error("❗ Please cluster jobs first before matching.")
+    st.session_state['run_matching'] = False
